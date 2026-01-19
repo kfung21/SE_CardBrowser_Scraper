@@ -8,6 +8,9 @@ A Node.js scraper for the official [Final Fantasy Trading Card Game card browser
 - Downloads high-resolution card images
 - Parses ability text with icon notation (element costs, crystal costs, dull/tap, etc.)
 - Supports filtering by set, element, type, rarity, category, cost, and more
+- **Batch mode**: Scrape all 29 sets with a single command
+- **Skip existing**: Automatically skips sets that have already been scraped
+- **Combined output**: Generates a single JSON with all cards across sets
 - Incremental saving - progress is saved every 10 cards
 - Incremental image downloads - images download as cards are scraped
 - Configurable via JSON config file or CLI arguments
@@ -21,14 +24,36 @@ npx playwright install chromium
 
 ## Usage
 
-### Basic Usage
+### Scrape All Sets (Recommended)
 
 ```bash
-# Scrape with a config file
-node se_card_browser.js --config opus1_config.json
+# Scrape all sets (JSON only, skips already-scraped sets)
+node se_card_browser.js --all
 
+# Scrape all sets with images
+node se_card_browser.js --all --images
+
+# Force re-scrape all sets (ignore existing files)
+node se_card_browser.js --all --force
+
+# Resume from a specific set
+node se_card_browser.js --all --start=Crystal
+
+# Watch the browser while scraping
+node se_card_browser.js --all --visible
+
+# Just combine existing set JSONs into one file
+node se_card_browser.js --combine
+```
+
+### Single Set Mode
+
+```bash
 # Scrape a specific set
 node se_card_browser.js --set "Opus I"
+
+# Scrape with a config file
+node se_card_browser.js --config opus1_config.json
 
 # Run with visible browser (for debugging)
 node se_card_browser.js --config myconfig.json --visible
@@ -42,15 +67,41 @@ node se_card_browser.js --set "Opus I" --no-details
 
 ### CLI Options
 
-| Option | Description |
-|--------|-------------|
-| `--config <file>` | Load configuration from JSON file |
-| `--set <name>` | Filter by set name (e.g., "Opus I", "Crystal Dominion") |
-| `--rarity <code>` | Filter by rarity (C, R, H, L, S, B, PR) |
-| `--category <name>` | Filter by category (VII, X, FFT, etc.) |
-| `--visible` | Run browser in visible mode (not headless) |
-| `--no-images` | Skip downloading card images |
-| `--no-details` | Skip scraping card details (only get codes) |
+| Option              | Description                                               |
+| ------------------- | --------------------------------------------------------- |
+| `--all`             | Scrape all sets sequentially                              |
+| `--combine`         | Combine existing set JSONs into `all_cards_combined.json` |
+| `--force`           | Re-scrape sets even if they already exist                 |
+| `--start=<name>`    | Start from a specific set (use with `--all`)              |
+| `--images`          | Download card images                                      |
+| `--config <file>`   | Load configuration from JSON file                         |
+| `--set <name>`      | Filter by set name (e.g., "Opus I", "Crystal Dominion")   |
+| `--rarity <code>`   | Filter by rarity (C, R, H, L, S, B, PR)                   |
+| `--category <name>` | Filter by category (VII, X, FFT, etc.)                    |
+| `--visible`         | Run browser in visible mode (not headless)                |
+| `--no-images`       | Skip downloading card images                              |
+| `--no-details`      | Skip scraping card details (only get codes)               |
+
+## Available Sets
+
+The scraper includes all 29 official FFTCG sets:
+
+- Legacy Collection
+- Opus I through Opus XIV
+- Crystal Dominion (Opus XV)
+- Emissaries of Light (Opus XVI)
+- Rebellion's Call (Opus XVII)
+- Resurgence of Power (Opus XVIII)
+- From Nightmares (Opus XIX)
+- Dawn of Heroes (Opus XX)
+- Beyond Destiny (Opus XXI)
+- Hidden Hope (Opus XXII)
+- Hidden Trials (Opus XXIII)
+- Hidden Legends (Opus XXIV)
+- Tears of the Planet (Opus XXV)
+- Gunslinger in the Abyss (Opus XXVI)
+- Journey of Discovery (Opus XXVII)
+- Promo
 
 ## Configuration
 
@@ -90,15 +141,37 @@ Create a JSON config file for more control:
 
 ### Filter Options
 
-| Filter | Values |
-|--------|--------|
-| `sets` | "Opus I", "Opus II", ..., "Crystal Dominion", "Gunslinger in the Abyss", etc. |
-| `elements` | "Fire", "Ice", "Wind", "Earth", "Lightning", "Water", "Light", "Dark" |
-| `types` | "Forward", "Backup", "Summon", "Monster", "Crystal" |
+| Filter     | Values                                                                                      |
+| ---------- | ------------------------------------------------------------------------------------------- |
+| `sets`     | "Opus I", "Opus II", ..., "Crystal Dominion", "Gunslinger in the Abyss", etc.               |
+| `elements` | "Fire", "Ice", "Wind", "Earth", "Lightning", "Water", "Light", "Dark"                       |
+| `types`    | "Forward", "Backup", "Summon", "Monster", "Crystal"                                         |
 | `rarities` | "C" (Common), "R" (Rare), "H" (Hero), "L" (Legend), "S" (Starter), "B" (Boss), "PR" (Promo) |
-| `flags` | "special", "exburst", "multi" (generic) |
+| `flags`    | "special", "exburst", "multi" (generic)                                                     |
 
 ## Output Format
+
+### Batch Mode Output Structure
+
+When using `--all`, files are organized by set:
+
+```
+card_results/
+├── LegacyCollection/
+│   ├── LegacyCollection_cards.json
+│   ├── card_codes.json
+│   └── images/
+├── OpusI/
+│   ├── OpusI_cards.json
+│   ├── card_codes.json
+│   └── images/
+├── OpusII/
+│   └── ...
+├── CrystalDominion/
+│   └── ...
+├── batch_summary.json
+└── all_cards_combined.json    # All cards in one file
+```
 
 ### Card JSON Structure
 
@@ -127,25 +200,42 @@ Create a JSON config file for more control:
 }
 ```
 
+### Combined JSON Structure
+
+The `all_cards_combined.json` file includes set statistics:
+
+```json
+{
+  "scraped_at": "2026-01-19T06:00:00.000Z",
+  "total": 5432,
+  "sets": [
+    { "set": "Legacy Collection", "count": 48 },
+    { "set": "Opus I", "count": 219 },
+    ...
+  ],
+  "cards": [ ... ]
+}
+```
+
 ### Icon Notation
 
 The scraper converts HTML icon elements to bracketed text notation:
 
-| Icon | Output | Meaning |
-|------|--------|---------|
-| Fire | `[F]` | Fire element/cost |
-| Ice | `[I]` | Ice element/cost |
-| Wind | `[W]` | Wind element/cost |
-| Earth | `[E]` | Earth element/cost |
-| Lightning | `[L]` | Lightning element/cost |
-| Water | `[A]` | Water/Aqua element/cost |
-| Light | `[Lt]` | Light element/cost |
-| Dark | `[D]` | Dark element/cost |
-| Crystal | `[C]` | Crystal/CP cost |
-| Number | `[1]`, `[2]`, etc. | Numbered cost |
-| Dull | `[Dull]` | Tap/Dull action |
-| Special | `[S]` | Special ability cost |
-| EX Burst | `[EX]` | EX Burst marker |
+| Icon      | Output             | Meaning                 |
+| --------- | ------------------ | ----------------------- |
+| Fire      | `[F]`              | Fire element/cost       |
+| Ice       | `[I]`              | Ice element/cost        |
+| Wind      | `[W]`              | Wind element/cost       |
+| Earth     | `[E]`              | Earth element/cost      |
+| Lightning | `[L]`              | Lightning element/cost  |
+| Water     | `[A]`              | Water/Aqua element/cost |
+| Light     | `[Lt]`             | Light element/cost      |
+| Dark      | `[D]`              | Dark element/cost       |
+| Crystal   | `[C]`              | Crystal/CP cost         |
+| Number    | `[1]`, `[2]`, etc. | Numbered cost           |
+| Dull      | `[Dull]`           | Tap/Dull action         |
+| Special   | `[S]`              | Special ability cost    |
+| EX Burst  | `[EX]`             | EX Burst marker         |
 
 ### Special Ability Formats
 
@@ -161,27 +251,19 @@ The scraper converts HTML icon elements to bracketed text notation:
 
 Italic text (keywords, card references) is wrapped in `*asterisks*`.
 
-## Output Files
-
-After scraping, you'll find in your output directory:
-
-```
-output/
-├── cards.json           # Complete card data
-├── cards_partial.json   # Partial save (deleted on completion)
-├── card_codes.json      # Just the card codes (saved first)
-└── images/
-    ├── 1-001H.jpg
-    ├── 1-002R.jpg
-    └── ...
-```
-
 ## Examples
 
-### Scrape Opus I
+### Scrape Everything
 
 ```bash
-node se_card_browser.js --set "Opus I"
+# First run - scrapes all sets
+node se_card_browser.js --all
+
+# Later - only scrapes new/missing sets
+node se_card_browser.js --all
+
+# Force refresh of all data
+node se_card_browser.js --all --force
 ```
 
 ### Scrape all Fire Legends
@@ -217,6 +299,8 @@ node se_card_browser.js --config fire_legends.json
 - Images download incrementally (won't lose progress if interrupted)
 - Card codes are saved immediately before detail scraping begins
 - Failed image downloads are logged but don't stop the scraper
+- Sets that fail during batch mode are logged and skipped (other sets continue)
+- Existing complete JSON files are skipped unless `--force` is used
 
 ## Requirements
 

@@ -1,13 +1,52 @@
 /**
- * FFTCG Card Scraper v8
+ * FFTCG Card Scraper v9.1
  * Fixed: $eval argument limitation (wrap in single object)
  * Added: Icon parsing for ability text ([F], [1], [Dull], etc.)
  * Added: Incremental image downloads
+ * Added: --all flag to scrape all sets sequentially
+ * Added: Skip existing sets, combined JSON output
+ * Fixed: Wait for JS to load cards before declaring error
  */
 
 const { chromium } = require('playwright');
 const fs = require('fs').promises;
 const path = require('path');
+
+// =============================================================================
+// ALL SETS LIST
+// =============================================================================
+
+const ALL_SETS = [
+    'Legacy Collection',
+    'Opus I',
+    'Opus II',
+    'Opus III',
+    'Opus IV',
+    'Opus V',
+    'Opus VI',
+    'Opus VII',
+    'Opus VIII',
+    'Opus IX',
+    'Opus X',
+    'Opus XI',
+    'Opus XII',
+    'Opus XIII',
+    'Opus XIV',
+    'Crystal Dominion',
+    'Emissaries of Light',
+    "Rebellion's Call",
+    'Resurgence of Power',
+    'From Nightmares',
+    'Dawn of Heroes',
+    'Beyond Destiny',
+    'Hidden Hope',
+    'Hidden Trials',
+    'Hidden Legends',
+    'Tears of the Planet',
+    'Gunslinger in the Abyss',
+    'Journey of Discovery',
+    'Promo',
+];
 
 // =============================================================================
 // CORRECT FILTER SELECTORS (based on actual HTML)
@@ -16,14 +55,12 @@ const path = require('path');
 const FILTER_SELECTORS = {
     // MULTI-SELECT filters (have .options container)
     set: {
-        container: '.filter.set.multi .options',  // <-- FIXED: need .options
+        container: '.filter.set.multi .options',
         itemSelector: '.item[data-value]',
-        // data-value: "Opus I", "Opus II", "Crystal Dominion", etc.
     },
     category: {
-        container: '.filter.category.multi .options',  // <-- FIXED: need .options
+        container: '.filter.category.multi .options',
         itemSelector: '.item[data-value]',
-        // data-value: "I", "II", "VII", "DFF", "FFT", etc.
     },
     
     // SINGLE-SELECT filters (items are direct children)
@@ -56,7 +93,6 @@ const FILTER_SELECTORS = {
     cost: {
         container: '.filter.cost.select',
         itemSelector: '.item[data-value]',
-        // data-value: "1" through "11"
     },
     flag: {
         container: '.filter.flag.select',
@@ -95,7 +131,7 @@ const DEFAULT_CONFIG = {
         includeCardDetails: true,
         delayBetweenCards: 150,
         delayBetweenPages: 500,
-        headless: false,  // Set to false for debugging
+        headless: false,
         timeout: 60000,
     },
     images: {
@@ -112,19 +148,11 @@ class FFTCGScraper {
         this.cards = [];
     }
     
-    // =========================================================================
-    // LOGGING
-    // =========================================================================
-    
     log(message, level = 'info') {
         const timestamp = new Date().toISOString().split('T')[1].slice(0, 12);
         const icons = { 'info': 'ℹ️ ', 'debug': '🔍', 'warn': '⚠️ ', 'error': '❌', 'success': '✅' };
         console.log(`[${timestamp}] ${icons[level] || ''} ${message}`);
     }
-    
-    // =========================================================================
-    // UTILITIES
-    // =========================================================================
     
     mergeConfig(defaults, overrides) {
         const result = { ...defaults };
@@ -149,12 +177,8 @@ class FFTCGScraper {
         return map[code?.toUpperCase()] || code;
     }
     
-    // =========================================================================
-    // BROWSER
-    // =========================================================================
-    
     async init() {
-        this.log('FFTCG Scraper v8 Starting...', 'info');
+        this.log('FFTCG Scraper v9.1 Starting...', 'info');
         this.log(`Output: ${this.config.output.directory}`, 'info');
         this.log(`Filters: ${JSON.stringify(this.config.filters)}`, 'info');
         
@@ -177,18 +201,13 @@ class FFTCGScraper {
         }
     }
     
-    // =========================================================================
-    // NAVIGATION
-    // =========================================================================
-    
     async handleCookieBanner() {
-        // Try to dismiss cookie consent banner
         const cookieSelectors = [
-            '.osano-cm-accept-all',           // Accept all button
-            '.osano-cm-button--type_accept',  // Accept button
+            '.osano-cm-accept-all',
+            '.osano-cm-button--type_accept',
             'button:has-text("Accept")',
             'button:has-text("Reject Non-Essential")',
-            '.osano-cm-dialog__close',        // Close button
+            '.osano-cm-dialog__close',
         ];
         
         for (const selector of cookieSelectors) {
@@ -206,7 +225,6 @@ class FFTCGScraper {
     }
     
     async clickSearchButton() {
-        // Click the Search button to load/refresh results
         const searchSelectors = [
             '.card-search button',
             '.search-btn',
@@ -235,16 +253,13 @@ class FFTCGScraper {
         
         await this.page.goto(url, { waitUntil: 'domcontentloaded' });
         
-        // Handle cookie consent banner first
         this.log('Checking for cookie banner...', 'debug');
         await this.sleep(1000);
         await this.handleCookieBanner();
         
-        // IMPORTANT: Expand filters panel FIRST (it's collapsed by default!)
         await this.expandFiltersPanel();
         await this.sleep(500);
         
-        // Now wait for filters to load (they should be visible now)
         this.log('Waiting for filter items...', 'debug');
         try {
             await this.page.waitForSelector('.filter.set.multi .options .item[data-value]', { timeout: 30000 });
@@ -255,25 +270,15 @@ class FFTCGScraper {
             await this.sleep(1000);
         }
         
-        // DON'T click Search yet - we want to apply filters first!
-        // The page starts with "No Results" which is fine.
-        
         this.log('Card browser loaded (filters ready, no search yet)', 'success');
     }
     
-    // =========================================================================
-    // FILTERS
-    // =========================================================================
-    
     async expandFiltersPanel() {
-        // The filters panel is collapsed by default - need to click "Filters" toggle to expand
         this.log('Checking if filters panel needs to be expanded...', 'debug');
         
         try {
-            // First, wait for the page to have the toggle button
             await this.page.waitForSelector('.card-filter .toggle, .toggle.noselect', { timeout: 10000 });
             
-            // Check if filters are hidden
             const filtersPanel = await this.page.$('.filters');
             if (filtersPanel) {
                 const style = await filtersPanel.getAttribute('style');
@@ -285,7 +290,6 @@ class FFTCGScraper {
                 }
             }
             
-            // Click the Filters toggle button
             this.log('Filters panel is hidden, clicking toggle to expand...', 'info');
             
             const toggleSelectors = [
@@ -301,7 +305,6 @@ class FFTCGScraper {
                         await toggleBtn.click();
                         await this.sleep(500);
                         
-                        // Verify filters are now visible
                         const filtersAfter = await this.page.$('.filters');
                         if (filtersAfter) {
                             const styleAfter = await filtersAfter.getAttribute('style');
@@ -330,16 +333,13 @@ class FFTCGScraper {
             return false;
         }
         
-        // Make sure filters panel is expanded
         await this.expandFiltersPanel();
         
-        // Map user-friendly value to data-value if needed
         let dataValue = value;
         if (filterConfig.values && filterConfig.values[value]) {
             dataValue = filterConfig.values[value];
         }
         
-        // Build the full selector
         const selector = `${filterConfig.container} .item[data-value="${dataValue}"]`;
         this.log(`Looking for: ${selector}`, 'debug');
         
@@ -349,7 +349,6 @@ class FFTCGScraper {
             if (!element) {
                 this.log(`❌ Element NOT FOUND: ${selector}`, 'error');
                 
-                // List available options
                 const available = await this.page.$$eval(
                     `${filterConfig.container} .item[data-value]`,
                     els => els.slice(0, 10).map(e => e.getAttribute('data-value'))
@@ -359,16 +358,13 @@ class FFTCGScraper {
                 return false;
             }
             
-            // Scroll into view first
             await element.scrollIntoViewIfNeeded();
             await this.sleep(200);
             
-            // Check if visible now
             const isVisible = await element.isVisible();
             if (!isVisible) {
                 this.log(`Element found but not visible, trying to make it visible...`, 'warn');
                 
-                // Try scrolling the container
                 await this.page.evaluate((sel) => {
                     const el = document.querySelector(sel);
                     if (el) {
@@ -378,11 +374,9 @@ class FFTCGScraper {
                 await this.sleep(300);
             }
             
-            // Click the element with a shorter timeout
             await element.click({ timeout: 5000 });
             this.log(`✅ Clicked ${filterType}: "${dataValue}"`, 'success');
             
-            // Verify it got selected
             await this.sleep(200);
             const classes = await element.getAttribute('class');
             if (classes?.includes('selected')) {
@@ -402,10 +396,8 @@ class FFTCGScraper {
         let appliedCount = 0;
         let criticalFilterFailed = false;
         
-        // Make sure filters panel is visible first
         await this.expandFiltersPanel();
         
-        // Set filter (CRITICAL - if this fails, we should abort)
         if (filters.sets?.length > 0) {
             this.log(`Applying SET filter: ${filters.sets.join(', ')}`, 'info');
             for (const set of filters.sets) {
@@ -419,13 +411,11 @@ class FFTCGScraper {
             }
         }
         
-        // If critical filter failed, ask if we should continue
         if (criticalFilterFailed) {
             this.log('FATAL: Set filter failed! Aborting to prevent loading ALL cards.', 'error');
             throw new Error('Critical filter (Set) failed to apply. Check if filters panel expanded correctly.');
         }
         
-        // Type filter
         if (filters.types?.length > 0) {
             this.log(`Applying TYPE filter: ${filters.types.join(', ')}`, 'info');
             for (const type of filters.types) {
@@ -434,7 +424,6 @@ class FFTCGScraper {
             }
         }
         
-        // Element filter
         if (filters.elements?.length > 0) {
             this.log(`Applying ELEMENT filter: ${filters.elements.join(', ')}`, 'info');
             for (const el of filters.elements) {
@@ -443,7 +432,6 @@ class FFTCGScraper {
             }
         }
         
-        // Rarity filter
         if (filters.rarities?.length > 0) {
             this.log(`Applying RARITY filter: ${filters.rarities.join(', ')}`, 'info');
             for (const rarity of filters.rarities) {
@@ -452,7 +440,6 @@ class FFTCGScraper {
             }
         }
         
-        // Category filter
         if (filters.categories?.length > 0) {
             this.log(`Applying CATEGORY filter: ${filters.categories.join(', ')}`, 'info');
             for (const cat of filters.categories) {
@@ -461,7 +448,6 @@ class FFTCGScraper {
             }
         }
         
-        // Cost filter
         if (filters.costs?.length > 0) {
             this.log(`Applying COST filter: ${filters.costs.join(', ')}`, 'info');
             for (const cost of filters.costs) {
@@ -470,7 +456,6 @@ class FFTCGScraper {
             }
         }
         
-        // Flag filter
         if (filters.flags?.length > 0) {
             this.log(`Applying FLAG filter: ${filters.flags.join(', ')}`, 'info');
             for (const flag of filters.flags) {
@@ -479,14 +464,12 @@ class FFTCGScraper {
             }
         }
         
-        // Keyword search
         if (filters.keyword) {
             this.log(`Applying KEYWORD: ${filters.keyword}`, 'info');
             await this.page.fill('input[name="keyword"]', filters.keyword);
             appliedCount++;
         }
         
-        // Code search
         if (filters.code) {
             this.log(`Applying CODE: ${filters.code}`, 'info');
             await this.page.fill('input[name="code"]', filters.code);
@@ -495,14 +478,12 @@ class FFTCGScraper {
         
         if (appliedCount > 0) {
             this.log(`Applied ${appliedCount} filter(s), clicking Search...`, 'info');
-            
-            // MUST click Search button to apply filters!
             await this.clickSearchButton();
             
-            // Wait for results to update
-            await this.sleep(2000);
+            // Wait for results to load (either cards appear or results header updates)
+            this.log('Waiting for search results to load...', 'debug');
+            await this.waitForSearchResults();
             
-            // Check result count
             const resultText = await this.page.textContent(RESULTS_HEADER).catch(() => null);
             this.log(`Results: ${resultText}`, 'info');
         }
@@ -510,14 +491,45 @@ class FFTCGScraper {
         return appliedCount;
     }
     
-    // =========================================================================
-    // CARD LOADING
-    // =========================================================================
+    async waitForSearchResults(maxWaitMs = 15000) {
+        const startTime = Date.now();
+        const checkInterval = 500;
+        
+        while (Date.now() - startTime < maxWaitMs) {
+            // Check if cards have loaded
+            const cardCount = await this.page.$$(CARD_SELECTOR).then(els => els.length);
+            if (cardCount > 0) {
+                this.log(`Search results loaded: ${cardCount} cards visible`, 'debug');
+                return true;
+            }
+            
+            // Check if results header shows a count (even if cards still loading)
+            const headerText = await this.page.textContent(RESULTS_HEADER).catch(() => '');
+            const hasCount = /\(\d+\)/.test(headerText);
+            if (hasCount) {
+                this.log(`Results header updated: ${headerText}`, 'debug');
+                // Give a bit more time for cards to render
+                await this.sleep(1000);
+                return true;
+            }
+            
+            // Check for "No Results" message (valid response, stop waiting)
+            const noResults = await this.page.$('.results .empty:not([style*="display: none"])');
+            if (noResults && await noResults.isVisible()) {
+                this.log('No results message appeared', 'debug');
+                return true;
+            }
+            
+            await this.sleep(checkInterval);
+        }
+        
+        this.log(`Timed out waiting for search results after ${maxWaitMs}ms`, 'warn');
+        return false;
+    }
     
     async getExpectedCount() {
         try {
             const text = await this.page.textContent(RESULTS_HEADER);
-            // Handle both "(148)" and "(50/219)" formats
             const match = text?.match(/\((?:\d+\/)?(\d+)\)/);
             return match ? parseInt(match[1]) : null;
         } catch (e) {
@@ -528,41 +540,53 @@ class FFTCGScraper {
     async loadAllCards() {
         this.log('Loading all cards...', 'info');
         
-        const expectedTotal = await this.getExpectedCount();
-        this.log(`Expected total: ${expectedTotal ?? 'unknown'}`, 'info');
+        // Wait for initial cards to load with retries
+        let currentCount = 0;
+        const maxRetries = 10;
+        const retryDelay = 1000;
         
-        // Safety limit - don't load more than this without explicit expected count
-        const MAX_CARDS_SAFETY = 500;
-        
-        let currentCount = await this.page.$$(CARD_SELECTOR).then(els => els.length);
-        this.log(`Current count: ${currentCount}`, 'info');
-        
-        if (currentCount === 0) {
-            this.log('No cards found! Check if filters returned results.', 'error');
+        for (let retry = 0; retry < maxRetries; retry++) {
+            currentCount = await this.page.$$(CARD_SELECTOR).then(els => els.length);
             
-            // Check for "No Results" message
-            const noResults = await this.page.$('.results .empty:not([style*="display: none"])');
-            if (noResults) {
-                const text = await noResults.textContent();
-                this.log(`No Results message: "${text}"`, 'warn');
+            if (currentCount > 0) {
+                break;
             }
             
+            // Check for "No Results" message (valid response, stop retrying)
+            const noResults = await this.page.$('.results .empty:not([style*="display: none"])');
+            if (noResults && await noResults.isVisible()) {
+                const text = await noResults.textContent();
+                this.log(`No Results message: "${text}"`, 'warn');
+                return 0;
+            }
+            
+            if (retry < maxRetries - 1) {
+                this.log(`Waiting for cards to load... (attempt ${retry + 1}/${maxRetries})`, 'debug');
+                await this.sleep(retryDelay);
+            }
+        }
+        
+        const expectedTotal = await this.getExpectedCount();
+        this.log(`Expected total: ${expectedTotal ?? 'unknown'}`, 'info');
+        this.log(`Current count: ${currentCount}`, 'info');
+        
+        const MAX_CARDS_SAFETY = 500;
+        
+        if (currentCount === 0) {
+            this.log('No cards found after waiting! Check if filters returned results.', 'error');
             return 0;
         }
         
-        // If no expected total and already have lots of cards, warn user
         if (!expectedTotal && currentCount >= 50) {
             this.log(`WARNING: No expected count and already ${currentCount} cards. Filter may have failed!`, 'warn');
         }
         
-        // Load more cards if needed
         let previousCount = 0;
         let noChangeCount = 0;
         
         while (noChangeCount < 5) {
             currentCount = await this.page.$$(CARD_SELECTOR).then(els => els.length);
             
-            // Safety check - stop if we're loading way too many cards
             if (!expectedTotal && currentCount >= MAX_CARDS_SAFETY) {
                 this.log(`SAFETY STOP: Loaded ${currentCount} cards without known total. Filter may have failed!`, 'warn');
                 this.log(`If this is intentional, set a specific filter or increase safety limit.`, 'warn');
@@ -577,7 +601,6 @@ class FFTCGScraper {
             if (currentCount === previousCount) {
                 noChangeCount++;
                 
-                // Try "Load more" button
                 const loadMore = await this.page.$('.results .more:not([style*="display: none"])');
                 if (loadMore && await loadMore.isVisible()) {
                     this.log('Clicking Load More...', 'debug');
@@ -587,7 +610,6 @@ class FFTCGScraper {
                     continue;
                 }
                 
-                // Try scrolling
                 await this.page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
                 await this.sleep(this.config.scraping.delayBetweenPages);
             } else {
@@ -602,10 +624,6 @@ class FFTCGScraper {
         this.log(`Total cards loaded: ${finalCount}`, 'success');
         return finalCount;
     }
-    
-    // =========================================================================
-    // CARD SCRAPING
-    // =========================================================================
     
     async scrapeCardCodes() {
         const items = await this.page.$$(CARD_SELECTOR);
@@ -634,26 +652,20 @@ class FFTCGScraper {
             rarity: null,
             category: null,
             set: null,
-            abilities: '',  // Changed from [] to '' since parseAbilityText returns string
+            abilities: '',
             imageUrl: `https://fftcg.cdn.sewest.net/images/cards/full/${cardCode}_eg.jpg`,
         };
         
         try {
-            // Click card to open overlay
             await this.page.click(`${CARD_SELECTOR}[data-code="${cardCode}"]`);
-            
-            // Wait for overlay
             await this.page.waitForSelector('.overlay', { state: 'visible', timeout: 5000 });
             await this.sleep(300);
             
-            // Get name from overlay title
             try {
                 card.name = await this.page.textContent('.overlay .bar .title');
                 card.name = card.name?.trim();
             } catch (e) {}
             
-            // Get abilities text with proper icon parsing
-            // Try multiple selectors in case structure varies
             const textSelectors = [
                 '.overlay .col.details .text',
                 '.overlay .col.details p.text',
@@ -663,8 +675,6 @@ class FFTCGScraper {
             
             for (const selector of textSelectors) {
                 try {
-                    // Use $eval to evaluate directly on the element
-                    // Playwright $eval only allows ONE arg after function, so wrap in object
                     const abilities = await this.page.$eval(selector, (el, icons) => {
                         const result = [];
                         
@@ -675,18 +685,15 @@ class FFTCGScraper {
                             } else if (node.nodeType === Node.ELEMENT_NODE) {
                                 const elem = node;
                                 
-                                // Check if this is an icon span
                                 if (elem.tagName === 'SPAN' && elem.classList.contains('icon')) {
                                     const classes = Array.from(elem.classList);
                                     
-                                    // Check for number icon (has "num" class)
                                     if (classes.includes('num')) {
                                         const num = elem.textContent?.trim() || '?';
                                         result.push(`[${num}]`);
                                         return;
                                     }
                                     
-                                    // Check for element/special icons
                                     for (const cls of classes) {
                                         if (icons.elements[cls]) {
                                             result.push(`[${icons.elements[cls]}]`);
@@ -698,18 +705,15 @@ class FFTCGScraper {
                                         }
                                     }
                                     
-                                    // Unknown icon - use class name as fallback
                                     const iconClass = classes.find(c => c !== 'icon');
                                     if (iconClass) {
                                         result.push(`[${iconClass}]`);
                                     }
                                 } else if (elem.tagName === 'SPAN' && elem.classList.contains('italic')) {
-                                    // Wrap italic text (like Priming) in asterisks
                                     result.push(`*${elem.textContent?.trim()}*`);
                                 } else if (elem.tagName === 'BR') {
                                     result.push(' ');
                                 } else {
-                                    // Process children for other elements
                                     for (const child of elem.childNodes) {
                                         processNode(child);
                                     }
@@ -732,29 +736,23 @@ class FFTCGScraper {
                     });
                     
                     if (abilities) {
-                        // Post-process: Clean up special ability formats
                         let processed = abilities
-                            // Priming: Remove --, move closing asterisk after costs
                             .replace(/(\*Priming [^*]+)\*\s*(?:--\s*)?((?:\[[^\]]+\])+)/g, '$1 $2*')
-                            // Limit Break: Remove -- between name and number
                             .replace(/\*Limit Break\s*--\s*(\d+)\*/g, '*Limit Break $1*')
-                            .replace(/\s+/g, ' ')  // clean up any double spaces
+                            .replace(/\s+/g, ' ')
                             .trim();
                         card.abilities = processed;
                         this.log(`Abilities for ${cardCode}: "${processed.substring(0, 60)}..."`, 'debug');
                         break;
                     }
                 } catch (e) {
-                    // Selector not found or eval failed - try next
                     this.log(`Selector ${selector} failed: ${e.message}`, 'debug');
                 }
             }
             
-            // If still no abilities, log the actual HTML structure for debugging
             if (!card.abilities) {
                 try {
                     const detailsHtml = await this.page.$eval('.overlay', el => {
-                        // Find any element with class containing 'text' or 'detail'
                         const debugInfo = [];
                         debugInfo.push('Classes found: ' + Array.from(el.querySelectorAll('*')).slice(0, 20).map(e => e.className).filter(c => c).join(', '));
                         const textEl = el.querySelector('.text') || el.querySelector('p.text') || el.querySelector('.col.details');
@@ -769,7 +767,6 @@ class FFTCGScraper {
                 }
             }
             
-            // Parse attributes table
             const rows = await this.page.$$('.overlay .attributes tr');
             for (const row of rows) {
                 try {
@@ -778,8 +775,6 @@ class FFTCGScraper {
                         const labelText = await cells[0].textContent();
                         const label = labelText.toLowerCase().replace(':', '').trim();
                         
-                        // Element is an icon, not text - check for icon class(es)
-                        // Dual-element cards have multiple icons
                         if (label === 'element') {
                             const iconEls = await cells[1].$$('.icon');
                             if (iconEls.length > 0) {
@@ -807,29 +802,23 @@ class FFTCGScraper {
                             case 'serial type': card.rarity = this.rarityCodeToName(value); break;
                             case 'category': card.category = value; break;
                             case 'set': card.set = value; break;
-                            case 'code': break; // Already have this
+                            case 'code': break;
                         }
                     }
                 } catch (e) {}
             }
             
-            // Close overlay
             await this.page.click('.overlay .close').catch(() => {});
             await this.sleep(100);
             
         } catch (e) {
             this.log(`Error scraping ${cardCode}: ${e.message}`, 'warn');
-            // Try to close overlay
             await this.page.click('.overlay .close').catch(() => {});
             await this.page.keyboard.press('Escape').catch(() => {});
         }
         
         return card;
     }
-    
-    // =========================================================================
-    // IMAGES
-    // =========================================================================
     
     async downloadImage(card) {
         if (!card.imageUrl) {
@@ -840,13 +829,20 @@ class FFTCGScraper {
         const imageDir = path.join(this.config.output.directory, this.config.output.imageSubdir);
         const filepath = path.join(imageDir, `${card.code}.jpg`);
         
+        // Check if image already exists
+        try {
+            await fs.access(filepath);
+            this.log(`Image already exists: ${card.code}.jpg`, 'debug');
+            return true;
+        } catch (e) {
+            // File doesn't exist, download it
+        }
+        
         this.log(`Downloading: ${card.imageUrl} -> ${filepath}`, 'debug');
         
         try {
-            // Ensure directory exists
             await fs.mkdir(imageDir, { recursive: true });
             
-            // Use native fetch instead of page.request (more reliable)
             const response = await fetch(card.imageUrl);
             this.log(`Fetch response for ${card.code}: ${response.status} ${response.statusText}`, 'debug');
             
@@ -872,7 +868,6 @@ class FFTCGScraper {
         const imageDir = path.join(this.config.output.directory, this.config.output.imageSubdir);
         this.log(`Downloading ${cards.length} images to ${imageDir}...`, 'info');
         
-        // Test first image URL
         if (cards.length > 0) {
             this.log(`First image URL: ${cards[0].imageUrl}`, 'info');
         }
@@ -890,12 +885,7 @@ class FFTCGScraper {
         this.log(`Downloaded ${success}/${cards.length} images`, 'success');
     }
     
-    // =========================================================================
-    // OUTPUT
-    // =========================================================================
-    
     async saveJson(cards, partial = false) {
-        // Ensure directory exists
         await fs.mkdir(this.config.output.directory, { recursive: true });
         
         const filename = partial 
@@ -915,17 +905,15 @@ class FFTCGScraper {
         if (!partial) {
             this.log(`Saved ${cards.length} cards to ${filepath}`, 'success');
             
-            // Remove partial file if it exists
             const partialPath = path.join(this.config.output.directory, 
                 this.config.output.jsonFilename.replace('.json', '_partial.json'));
             try {
                 await fs.unlink(partialPath);
-            } catch (e) {} // Ignore if doesn't exist
+            } catch (e) {}
         }
     }
     
     async saveIncremental() {
-        // Save current progress
         if (this.cards.length > 0) {
             await this.saveJson(this.cards, true);
         }
@@ -949,10 +937,6 @@ class FFTCGScraper {
         this.log(`Types: ${JSON.stringify(group('type'))}`, 'info');
     }
     
-    // =========================================================================
-    // MAIN
-    // =========================================================================
-    
     async run() {
         const startTime = Date.now();
         
@@ -970,7 +954,6 @@ class FFTCGScraper {
             
             const cardCodes = await this.scrapeCardCodes();
             
-            // Save card codes immediately so we don't lose them
             const codesPath = path.join(this.config.output.directory, 'card_codes.json');
             await fs.mkdir(this.config.output.directory, { recursive: true });
             await fs.writeFile(codesPath, JSON.stringify({ 
@@ -984,26 +967,23 @@ class FFTCGScraper {
             this.log(`Scraping details for ${cardCodes.length} cards...`, 'info');
             
             if (this.config.scraping.includeCardDetails) {
-                const SAVE_INTERVAL = 10; // Save every 10 cards
+                const SAVE_INTERVAL = 10;
                 let imagesDownloaded = 0;
                 
                 for (let i = 0; i < cardCodes.length; i++) {
                     const card = await this.scrapeCardDetails(cardCodes[i]);
                     this.cards.push(card);
                     
-                    // Download image immediately if enabled
                     if (this.config.output.downloadImages) {
                         const imgResult = await this.downloadImage(card);
                         if (imgResult) imagesDownloaded++;
                     }
                     
-                    // Progress logging
                     if ((i + 1) % 20 === 0 || i === cardCodes.length - 1) {
                         const imgStatus = this.config.output.downloadImages ? `, ${imagesDownloaded} images` : '';
                         this.log(`Progress: ${i + 1}/${cardCodes.length} cards${imgStatus}`, 'info');
                     }
                     
-                    // Incremental save every N cards
                     if ((i + 1) % SAVE_INTERVAL === 0) {
                         await this.saveIncremental();
                         this.log(`Progress saved (${this.cards.length} cards)`, 'debug');
@@ -1012,7 +992,6 @@ class FFTCGScraper {
                     await this.sleep(this.config.scraping.delayBetweenCards);
                 }
                 
-                // Images already downloaded incrementally, skip batch download
                 if (this.config.output.downloadImages) {
                     this.log(`Images downloaded incrementally: ${imagesDownloaded}/${this.cards.length}`, 'success');
                 }
@@ -1027,8 +1006,6 @@ class FFTCGScraper {
             
             if (this.config.output.saveJson) await this.saveJson(this.cards);
             
-            // Only batch download images if we didn't download incrementally
-            // (incremental download happens when includeCardDetails is true)
             if (this.config.output.downloadImages && !this.config.scraping.includeCardDetails) {
                 await this.downloadImages(this.cards);
             }
@@ -1040,7 +1017,6 @@ class FFTCGScraper {
             this.log(`FATAL: ${error.message}`, 'error');
             console.error(error.stack);
             
-            // Try to save whatever we have
             if (this.cards.length > 0) {
                 this.log(`Attempting to save ${this.cards.length} cards before exit...`, 'warn');
                 try {
@@ -1056,6 +1032,69 @@ class FFTCGScraper {
             await this.close();
         }
     }
+}
+
+// =============================================================================
+// UTILITIES
+// =============================================================================
+
+async function setAlreadyScraped(folder, filename) {
+    const filepath = path.join('./card_results', folder, filename);
+    try {
+        const content = await fs.readFile(filepath, 'utf8');
+        const data = JSON.parse(content);
+        if (data.complete && data.cards && data.cards.length > 0) {
+            return { exists: true, count: data.cards.length };
+        }
+        return { exists: false };
+    } catch (e) {
+        return { exists: false };
+    }
+}
+
+async function combineAllSets() {
+    console.log('\n📦 Combining all sets into single JSON...');
+    
+    const allCards = [];
+    const setStats = [];
+    
+    for (const setName of ALL_SETS) {
+        const folder = setName.replace(/[^a-zA-Z0-9]/g, '');
+        const filename = `${folder}_cards.json`;
+        const filepath = path.join('./card_results', folder, filename);
+        
+        try {
+            const content = await fs.readFile(filepath, 'utf8');
+            const data = JSON.parse(content);
+            
+            if (data.cards && data.cards.length > 0) {
+                allCards.push(...data.cards);
+                setStats.push({ set: setName, count: data.cards.length });
+                console.log(`  ✅ ${setName}: ${data.cards.length} cards`);
+            }
+        } catch (e) {
+            console.log(`  ⚠️  ${setName}: not found or invalid`);
+        }
+    }
+    
+    if (allCards.length === 0) {
+        console.log('❌ No cards found to combine');
+        return null;
+    }
+    
+    const combined = {
+        scraped_at: new Date().toISOString(),
+        total: allCards.length,
+        sets: setStats,
+        cards: allCards,
+    };
+    
+    const outputPath = './card_results/all_cards_combined.json';
+    await fs.writeFile(outputPath, JSON.stringify(combined, null, 2));
+    console.log(`\n✅ Combined ${allCards.length} cards from ${setStats.length} sets`);
+    console.log(`📄 Saved to: ${outputPath}`);
+    
+    return combined;
 }
 
 // =============================================================================
@@ -1076,8 +1115,123 @@ async function main() {
         }
     }
     
-    // CLI overrides
+    // --combine flag: just combine existing JSONs without scraping
+    if (process.argv.includes('--combine')) {
+        await combineAllSets();
+        return;
+    }
+    
+    // --all flag: scrape every set sequentially
+    if (process.argv.includes('--all')) {
+        const downloadImages = process.argv.includes('--images');
+        const headless = !process.argv.includes('--visible');
+        const force = process.argv.includes('--force');
+        const startFrom = process.argv.find(a => a.startsWith('--start='))?.split('=')[1];
+        
+        let setsToScrape = [...ALL_SETS];
+        if (startFrom) {
+            const idx = ALL_SETS.findIndex(s => s.toLowerCase().includes(startFrom.toLowerCase()));
+            if (idx !== -1) {
+                setsToScrape = ALL_SETS.slice(idx);
+                console.log(`⏭️  Starting from "${ALL_SETS[idx]}" (${setsToScrape.length} sets)`);
+            }
+        }
+        
+        console.log(`\n🎴 FFTCG Scraper - Scraping ALL sets`);
+        console.log(`📦 Sets: ${setsToScrape.length}`);
+        console.log(`🖼️  Images: ${downloadImages}`);
+        console.log(`👁️  Headless: ${headless}`);
+        console.log(`🔄 Force re-scrape: ${force}\n`);
+        
+        const results = [];
+        const skipped = [];
+        const startTime = Date.now();
+        
+        for (let i = 0; i < setsToScrape.length; i++) {
+            const setName = setsToScrape[i];
+            const folder = setName.replace(/[^a-zA-Z0-9]/g, '');
+            const filename = `${folder}_cards.json`;
+            
+            // Check if already scraped (unless --force)
+            if (!force) {
+                const existing = await setAlreadyScraped(folder, filename);
+                if (existing.exists) {
+                    console.log(`⏭️  [${i + 1}/${setsToScrape.length}] ${setName}: already scraped (${existing.count} cards)`);
+                    skipped.push({ set: setName, count: existing.count });
+                    results.push({ set: setName, count: existing.count, status: 'skipped' });
+                    continue;
+                }
+            }
+            
+            console.log(`\n${'='.repeat(50)}`);
+            console.log(`[${i + 1}/${setsToScrape.length}] ${setName}`);
+            console.log(`${'='.repeat(50)}`);
+            
+            const setConfig = {
+                output: {
+                    directory: `./card_results/${folder}`,
+                    downloadImages,
+                    saveJson: true,
+                    jsonFilename: filename,
+                },
+                filters: { sets: [setName] },
+                scraping: { includeCardDetails: true, headless },
+            };
+            
+            try {
+                const scraper = new FFTCGScraper(setConfig);
+                const cards = await scraper.run();
+                results.push({ set: setName, count: cards.length, status: 'scraped' });
+                console.log(`\n✅ ${setName}: ${cards.length} cards\n`);
+            } catch (err) {
+                console.error(`\n❌ ${setName} failed: ${err.message}\n`);
+                results.push({ set: setName, count: 0, status: 'failed', error: err.message });
+            }
+            
+            if (i < setsToScrape.length - 1) {
+                console.log('⏳ Waiting 2s before next set...');
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+        
+        // Summary
+        const elapsed = ((Date.now() - startTime) / 1000 / 60).toFixed(1);
+        const scraped = results.filter(r => r.status === 'scraped');
+        const failed = results.filter(r => r.status === 'failed');
+        const total = results.reduce((s, r) => s + r.count, 0);
+        
+        console.log(`\n${'='.repeat(50)}`);
+        console.log(`✅ COMPLETE`);
+        console.log(`${'='.repeat(50)}`);
+        console.log(`⏱️  Time: ${elapsed} minutes`);
+        console.log(`🎴 Total: ${total} cards`);
+        console.log(`✅ Scraped: ${scraped.length} sets`);
+        console.log(`⏭️  Skipped: ${skipped.length} sets (already existed)`);
+        console.log(`❌ Failed: ${failed.length} sets`);
+        
+        if (failed.length) {
+            console.log(`\nFailed sets:`);
+            failed.forEach(f => console.log(`  - ${f.set}: ${f.error}`));
+        }
+        
+        // Save summary
+        await fs.mkdir('./card_results', { recursive: true });
+        await fs.writeFile('./card_results/batch_summary.json', JSON.stringify({
+            scraped_at: new Date().toISOString(),
+            elapsed_minutes: parseFloat(elapsed),
+            total_cards: total,
+            results,
+        }, null, 2));
+        
+        // Combine all sets into single JSON
+        await combineAllSets();
+        
+        return;
+    }
+    
+    // CLI overrides for single-set mode
     if (process.argv.includes('--no-images')) config.output = { ...config.output, downloadImages: false };
+    if (process.argv.includes('--images')) config.output = { ...config.output, downloadImages: true };
     if (process.argv.includes('--no-details')) config.scraping = { ...config.scraping, includeCardDetails: false };
     if (process.argv.includes('--visible')) config.scraping = { ...config.scraping, headless: false };
     
@@ -1100,7 +1254,7 @@ async function main() {
     await scraper.run();
 }
 
-module.exports = { FFTCGScraper, DEFAULT_CONFIG, FILTER_SELECTORS };
+module.exports = { FFTCGScraper, DEFAULT_CONFIG, FILTER_SELECTORS, ALL_SETS, combineAllSets };
 
 if (require.main === module) {
     main().catch(err => {
