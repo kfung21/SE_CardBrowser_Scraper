@@ -1,0 +1,15 @@
+{
+    "output": {
+        "directory": "./Opus26",
+        "downloadImages": false,
+        "saveJson": true,
+        "jsonFilename": "opus26_cards.json"
+    },
+    "filters": {
+        "sets": ["Gunslinger in the Abyss"]
+    },
+    "scraping": {
+        "includeCardDetails": true,
+        "headless": true
+    }
+}
