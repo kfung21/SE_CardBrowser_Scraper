@@ -1,12 +1,12 @@
 {
     "output": {
-        "directory": "./Opus19",
+        "directory": "./Opus27",
         "downloadImages": false,
         "saveJson": true,
-        "jsonFilename": "Opus19_cards.json"
+        "jsonFilename": "Opus27_cards.json"
     },
     "filters": {
-        "sets": ["From Nightmares"]
+        "sets": ["Journey of Discovery"]
     },
     "scraping": {
         "includeCardDetails": true,

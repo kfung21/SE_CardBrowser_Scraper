@@ -778,17 +778,21 @@ class FFTCGScraper {
                         const labelText = await cells[0].textContent();
                         const label = labelText.toLowerCase().replace(':', '').trim();
                         
-                        // Element is an icon, not text - check for icon class
+                        // Element is an icon, not text - check for icon class(es)
+                        // Dual-element cards have multiple icons
                         if (label === 'element') {
-                            const iconEl = await cells[1].$('.icon');
-                            if (iconEl) {
-                                const classes = await iconEl.getAttribute('class');
-                                // Extract element from class like "icon fire" -> "Fire"
-                                const elementMatch = classes?.match(/icon\s+(\w+)/);
-                                if (elementMatch) {
-                                    const el = elementMatch[1];
-                                    card.element = el.charAt(0).toUpperCase() + el.slice(1);
+                            const iconEls = await cells[1].$$('.icon');
+                            if (iconEls.length > 0) {
+                                const elements = [];
+                                for (const iconEl of iconEls) {
+                                    const classes = await iconEl.getAttribute('class');
+                                    const elementMatch = classes?.match(/icon\s+(\w+)/);
+                                    if (elementMatch) {
+                                        const el = elementMatch[1];
+                                        elements.push(el.charAt(0).toUpperCase() + el.slice(1));
+                                    }
                                 }
+                                card.element = elements.join('/');
                             }
                             continue;
                         }
